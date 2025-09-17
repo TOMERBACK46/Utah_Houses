@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 import argparse
 from pathlib import Path
@@ -11,12 +10,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.linear_model import Ridge
 
-# ---------- Optional: CatBoost ----------
-try:
-    from catboost import CatBoostRegressor, Pool
-    _HAVE_CATBOOST = True
-except Exception:
-    _HAVE_CATBOOST = False
+
+from catboost import CatBoostRegressor, Pool
 
 
 # =========================
@@ -90,12 +85,8 @@ def train_catboost_weighted_rmse(
     l2_leaf_reg: float = 6.0,
     early_stopping_rounds: int = 100,
     verbose: int = 200,
-    weight_alpha: float = 2.0,   # ↑ to punish big-$ errors more (e.g., 1.5–2.0)
+    weight_alpha: float = 2.0,   #to punish big errors more
 ):
-    """
-    Baseline model that optimizes dollar-scale RMSE but upweights expensive homes,
-    so large absolute mistakes are penalized more strongly.
-    """
     Xn = safe_numeric_df(X)
     yv = pd.to_numeric(y, errors="coerce").astype(float).values
 
@@ -128,11 +119,6 @@ def train_catboost_weighted_rmse(
     pred_tr = model.predict(Xn)  # in dollars
     return model, pred_tr
 
-
-# =========================
-# ======  CATBOOST B  =====
-# =========================
-
 def train_catboost_rmse(
     X: pd.DataFrame, y: pd.Series,
     eval_size: float = 0.1,
@@ -144,8 +130,6 @@ def train_catboost_rmse(
     early_stopping_rounds: int = 100,
     verbose: int = 200,
 ) -> Tuple[CatBoostRegressor, np.ndarray, np.ndarray]:
-    if not _HAVE_CATBOOST:
-        raise RuntimeError("CatBoost is not installed. Run: pip install catboost")
 
     Xn = safe_numeric_df(X)
     yv = y.values.astype(float)
@@ -174,10 +158,6 @@ def train_catboost_rmse(
     return model, pred_tr, model.get_feature_importance(train_pool)
 
 
-# =========================
-# ======  BLENDING  =======
-# =========================
-
 def best_weight_grid(y_true: np.ndarray, p_a: np.ndarray, p_b: np.ndarray,
                      step: float = 0.01) -> float:
     best_w = 0.5
@@ -189,23 +169,6 @@ def best_weight_grid(y_true: np.ndarray, p_a: np.ndarray, p_b: np.ndarray,
             best_val = v
             best_w = float(w)
     return best_w
-
-def gated_blend(
-    p_a: np.ndarray, p_b: np.ndarray,
-    w_b: float,
-    log_diff_gate: float = 0.0
-) -> np.ndarray:
-    """
-    If |log(pb) - log(pa)| > gate → fall back to baseline (A). Else blend.
-    """
-    if log_diff_gate <= 0:
-        return (1.0 - w_b) * p_a + w_b * p_b
-    la = np.log(np.clip(p_a, 1e-9, None))
-    lb = np.log(np.clip(p_b, 1e-9, None))
-    mask_disagree = np.abs(lb - la) > log_diff_gate
-    blend = (1.0 - w_b) * p_a + w_b * p_b
-    blend[mask_disagree] = p_a[mask_disagree]
-    return blend
 
 
 # =========================
@@ -219,22 +182,19 @@ def main(
     calib_size: float = 0.2,
     seed: int = 0,
     out_dir: str = "out",
-    # Baseline CatBoost (weighted RMSE on $)
-    cbA_iterations: int = 1500,
-    cbA_lr: float = 0.03,
-    cbA_depth: int = 8,
+    cbA_iterations: int = 1000,
+    cbA_lr: float = 0.05,
+    cbA_depth: int = 7,
     cbA_l2: float = 6.0,
     cbA_early_stop: int = 100,
     cbA_verbose: int = 200,
     cbA_weight_alpha: float = 1.5,
-    cb_iterations: int = 1500,
-    cb_lr: float = 0.03,
-    cb_depth: int = 8,
+    cb_iterations: int = 1500, #no more needed anyway
+    cb_lr: float = 0.02,
+    cb_depth: int = 9,
     cb_l2: float = 6.0,
     cb_early_stop: int = 100,
     cb_verbose: int = 200,
-    # Blending
-    gate_logdiff: float = 0.35,
     test_size: float = 0.15,
     predict_csv: Optional[str] = None,
     pred_out: str = "out/ensemble_test_predictions.csv"
@@ -244,13 +204,15 @@ def main(
     df = pd.read_csv(csv_path)
     if target_col not in df.columns:
         raise ValueError(f"Target column '{target_col}' not found in {csv_path}")
-    y = pd.to_numeric(df[target_col], errors="coerce").astype(float)
-    X = df.drop(columns=[target_col] + ([id_col] if id_col in df.columns else []))
+    y = pd.to_numeric(df[target_col], errors="coerce").astype(float) # y is the prices
+    X = df.drop(columns=[target_col] + ([id_col] if id_col in df.columns else [])) # all features
 
-    # ---------- Split: TEST (final holdout) first ----------
     inference_mode = predict_csv is not None
-
     # ---------- Split data ----------
+    """
+        if we are on inference_mode meaning we try predicting some test we can split the data to train and
+        calibration, otherwise we need also to take some of the training data for inside testing.
+    """
     if inference_mode:
         # No final test holdout. Use all data for train+calibration.
         bins_all = price_bins_for_stratify(y, q=10)
@@ -279,8 +241,7 @@ def main(
             stratify=bins_rem
         )
 
-    # ---------- Model A: CatBoost baseline (weighted RMSE on $) ----------
-    print("\n=== CatBoost A (dollar RMSE, weighted) ===")
+    print("\n=== CatBoost A (RMSE, weighted) ===")
     cbA_model, yhatA_tr_all = train_catboost_weighted_rmse(
         X_tr, y_tr,
         eval_size=0.10,
@@ -292,7 +253,7 @@ def main(
         early_stopping_rounds=cbA_early_stop,
         verbose=cbA_verbose,
         weight_alpha=cbA_weight_alpha,
-    )
+    ) #first model, tries to punish big mistakes, attempt to play with normal hyper parmeters didnt change much
     yhatA_cal = cbA_model.predict(safe_numeric_df(X_cal))
     if not inference_mode:
         yhatA_test = cbA_model.predict(safe_numeric_df(X_test))
@@ -312,7 +273,7 @@ def main(
         l2_leaf_reg=cb_l2,
         early_stopping_rounds=cb_early_stop,
         verbose=cb_verbose,
-    )
+    ) #second model, taking the model as is
     yhatB_cal = cb_model.predict(safe_numeric_df(X_cal))
     if not inference_mode:
         yhatB_test = cb_model.predict(safe_numeric_df(X_test))
@@ -320,7 +281,7 @@ def main(
     metrics_block(y_tr.values, yhatB_tr_all, "Train (CatBoost B)")
     metrics_block(y_cal.values, yhatB_cal, "Calibration (CatBoost B)")
 
-    # ---------- Learn blend weight on CALIBRATION ----------
+    # we try to optimize the best weight that give opptimize result on linear comb between the two models
     wB = best_weight_grid(y_cal.values, yhatA_cal, yhatB_cal, step=0.01)
 
     # Optional: log-space linear stacker (still fit ONLY on calibration)
@@ -334,7 +295,7 @@ def main(
     # Blended predictions
     yhat_blend_cal = np.exp(reg.predict(Z_cal))
 
-    # If we're in inference mode, load the external file and predict
+    #load the external file and predict if needed
     if inference_mode:
         df_pred = pd.read_csv(predict_csv)
         Xp, id_series = align_features(df_pred, X.columns.tolist(), id_col, target_col)
@@ -343,7 +304,6 @@ def main(
         pA_pred = cbA_model.predict(Xp)
         pB_pred = cb_model.predict(Xp)
 
-        # Blend in log space using the stacker trained on CAL
         Z_pred = np.column_stack([
             np.log(np.clip(pA_pred, 1e-9, None)),
             np.log(np.clip(pB_pred, 1e-9, None)),
@@ -376,11 +336,7 @@ def main(
 
     print("\n=== Blended on Calibration ===")
     print(f"  Learned weight for CatBoost (wB): {wB:.2f}  (Baseline weight = {1.0 - wB:.2f})")
-    if gate_logdiff > 0:
-        la = np.log(np.clip(yhatA_cal, 1e-9, None))
-        lb = np.log(np.clip(yhatB_cal, 1e-9, None))
-        frac_gated = float(np.mean(np.abs(lb - la) > gate_logdiff))
-        print(f"  Gate active (|Δlog|>{gate_logdiff:.2f}) on {frac_gated*100:.1f}% of calibration rows")
+
     metrics_block(y_cal.values, yhat_blend_cal, "Blended (Calibration)")
 
     # ---------- Final evaluation on TEST ----------
@@ -402,10 +358,6 @@ def main(
     print(f"Saved calibration preds → {out / 'ensemble_calibration_preds.csv'}")
 
 
-# =========================
-# ========  CLI  ==========
-# =========================
-
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default="out/train_preprocessed.csv")
@@ -415,8 +367,6 @@ def parse_args():
     ap.add_argument("--test-size", type=float, default=0.15)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", default="out")
-
-    ap.add_argument("--gate-logdiff", type=float, default=0.5)
 
     ap.add_argument("--predict-csv", default=None)
     ap.add_argument("--pred-out", default="out/ensemble_test_predictions.csv")
@@ -434,7 +384,6 @@ if __name__ == "__main__":
         test_size=args.test_size,
         seed=args.seed,
         out_dir=args.out,
-        gate_logdiff=args.gate_logdiff,
         predict_csv=args.predict_csv,
         pred_out=args.pred_out,
     )
