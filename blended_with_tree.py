@@ -13,8 +13,6 @@ from sklearn.tree import DecisionTreeRegressor
 from catboost import CatBoostRegressor, Pool
 
 
-# ======  HELPERS  ========
-
 def rmse(y_true, y_pred) -> float:
     # compatible with older sklearn (no squared=False)
     return float(np.sqrt(mean_squared_error(y_true, y_pred)))
@@ -77,8 +75,7 @@ def gated_blend_pct(
 
 def default_simple_features(candidates: List[str]) -> List[str]:
     """
-    A compact, robust set of features most homes have after your preprocessing.
-    Keep this small to avoid overfit and to be reliably available.
+    A compact, robust set of features most homes have
     """
     pref = [
         "OverallQual", "OverallCond",
@@ -90,17 +87,11 @@ def default_simple_features(candidates: List[str]) -> List[str]:
         "HouseAge", "SinceRemod",
         "GarageAge", "GarageAgeMissing",
         "HasVeneer",
-        # Common ordinal flags that survived preprocessing:
         "PavedDrive", "ExterQual", "KitchenQual",
     ]
     use = [c for c in pref if c in candidates]
     # Fallback safety: if too few, just take numerics
     return use if len(use) >= 8 else candidates
-
-
-# =========================
-# == MODEL A: TREE, L^p ==
-# =========================
 
 def train_tree_Lp(
     X: pd.DataFrame, y: pd.Series,
@@ -113,11 +104,7 @@ def train_tree_Lp(
     weight_clip: Tuple[float, float] = (0.1, 50.0),  # stabilize weights
 ) -> Tuple[DecisionTreeRegressor, np.ndarray]:
     """
-    Fit a DecisionTreeRegressor with an approximate L^p loss (p>2) via IRLS:
-      minimize sum_i |e_i|^p  ≈  minimize sum_i w_i * e_i^2, with w_i ∝ |e_i|^(p-2)
-    This makes small errors matter less (vs MSE) and large errors matter more.
-
-    Returns: (fitted_tree, in_sample_predictions)
+    Fit a DecisionTreeRegressor with an approximate L^p loss (p>2) via
     """
     if feature_list is None:
         feature_list = default_simple_features(X.columns.tolist())
@@ -151,17 +138,13 @@ def train_tree_Lp(
     return tree, yhat
 
 
-# =========================
-# ======  CATBOOST B  =====
-# =========================
-
 def train_catboost_rmse(
     X: pd.DataFrame, y: pd.Series,
     eval_size: float = 0.1,
     random_state: int = 0,
     iterations: int = 1500,
-    learning_rate: float = 0.03,
-    depth: int = 8,
+    learning_rate: float = 0.02,
+    depth: int = 9,
     l2_leaf_reg: float = 6.0,
     early_stopping_rounds: int = 100,
     verbose: int = 200,
@@ -201,23 +184,15 @@ def train_catboost_rmse(
 
 def best_weight_grid(y_true: np.ndarray, p_a: np.ndarray, p_b: np.ndarray,
                      step: float = 0.01) -> float:
-    """
-    Simple convex blend: argmin_w RMSE( (1-w)*A + w*B ) on calibration.
-    """
     best_w = 0.5
-    best_rmse = float("inf")
+    best_val = float("inf")
     for w in np.arange(0.0, 1.0 + 1e-12, step):
         pred = (1.0 - w) * p_a + w * p_b
-        r = rmse(y_true, pred)
-        if r < best_rmse:
-            best_rmse = r
+        v = rmse(y_true, pred)
+        if v < best_val:
+            best_val = v
             best_w = float(w)
     return best_w
-
-
-# =========================
-# ======  DRIVER  =========
-# =========================
 
 def main(
     csv_path: str = "out/train_preprocessed.csv",
@@ -362,12 +337,6 @@ def main(
     pred_cal.to_csv(out / "ensemble_calibration_preds.csv", index=False)
     print(f"Saved calibration preds → {out / 'ensemble_calibration_preds.csv'}")
 
-
-
-
-# =========================
-# ========  CLI  ==========
-# =========================
 
 def parse_args():
     ap = argparse.ArgumentParser()

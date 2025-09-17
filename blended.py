@@ -1,23 +1,16 @@
 from __future__ import annotations
 import argparse
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict
-
+from typing import Optional, Tuple, List
 import numpy as np
 import pandas as pd
-
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.linear_model import Ridge
-
-
 from catboost import CatBoostRegressor, Pool
 
 
-# =========================
-# ======  HELPERS  ========
-# =========================
-def align_features(df_pred: pd.DataFrame, columns_train: List[str], id_col: Optional[str], target_col: Optional[str]) -> Tuple[pd.DataFrame, Optional[pd.Series]]:
+def align_features(df_pred: pd.DataFrame, columns_train: List[str], id_col: Optional[str], target_col: Optional[str]) :
     """
     Align df_pred to the training feature set:
       - drop id/target if present
@@ -48,8 +41,7 @@ def align_features(df_pred: pd.DataFrame, columns_train: List[str], id_col: Opti
 
     return safe_numeric_df(Xp), id_series
 
-
-def rmse(y_true, y_pred) -> float:
+def rmse(y_true, y_pred):
     return float(np.sqrt(mean_squared_error(y_true, y_pred)))
 
 def metrics_block(y_true, y_pred, label: str):
@@ -67,7 +59,7 @@ def price_bins_for_stratify(y: pd.Series, q: int = 10) -> Optional[pd.Series]:
     except Exception:
         return None
 
-def safe_numeric_df(df: pd.DataFrame) -> pd.DataFrame:
+def safe_numeric_df(df: pd.DataFrame):
     out = df.copy()
     for c in out.columns:
         out[c] = pd.to_numeric(out[c], errors="coerce")
@@ -170,10 +162,6 @@ def best_weight_grid(y_true: np.ndarray, p_a: np.ndarray, p_b: np.ndarray,
             best_w = float(w)
     return best_w
 
-
-# =========================
-# ======  DRIVER  =========
-# =========================
 
 def main(
     csv_path: str = "out/train_preprocessed.csv",
